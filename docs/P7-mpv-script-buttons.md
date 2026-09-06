@@ -3,7 +3,7 @@
 ## Recovery anchor
 
 - Objective: 将 MPV 配置管理的 `scripts` 改造成可维护的自定义播放按钮入口，并接入移动端/电视端 MPV 控制条。
-- Acceptance: 普通 `.lua/.js` 管理语义不变；自定义按钮支持标题、短按 Lua、长按 Lua、启动 Lua、启用状态和固定最多 8 个按钮；按钮通过 `script-message` 调用；非 MPV 播放不显示；桥接脚本不触发 GPU 视频处理判定；Java 编译和核心 JSON 解析验证通过。
+- Acceptance: 普通 `.lua/.js` 管理语义不变；自定义按钮支持标题、短按 Lua、长按 Lua、启动 Lua、启用状态和不设数量上限；按钮通过 `script-message` 调用；非 MPV 播放不显示；桥接脚本不触发 GPU 视频处理判定；Java 编译和核心 JSON 解析验证通过。
 - Current stage: implementation complete; local Java compilation and device UI smoke test passed.
 - Next action: 完成 task guard 原子提交并创建恢复 tag。
 
@@ -46,17 +46,19 @@ MPV 官方 Anime4K 资料在本阶段未作为实现依据：网络获取官方 
 
 ## 最终设计
 
-- 数据文件：`files/mpv/scripts/custombuttons.json`，每项含 `id`、`title`、`content`、`longPressContent`、`onStartup`、`enabled`、`order`；ID 使用 UUID/安全字符，最多保留 8 项。
+- 数据文件：`files/mpv/scripts/custombuttons.json`，每项含 `id`、`title`、`content`、`longPressContent`、`onStartup`、`enabled`、`order`；ID 使用 UUID/安全字符，不限制按钮数量。
 - 生成文件：`files/mpv/scripts/webhtv-custom-buttons.lua`。只注册 `webhtv-custom-button` 消息并执行对应 Lua；错误使用 `pcall` 记录，不影响播放器主流程。
+- 受管脚本：普通用户脚本保存在 `files/mpv/scripts/.webhtv/`。MPV 只自动加载顶层桥接文件，避免普通脚本在启动时独立执行；按钮代码仍由桥接文件按“点击/长按/启动时”分发。
 - 配置 UI：scripts 页复用 MPV 配置管理顶部已有的“新建”按钮；切换到 scripts 后点击“新建”进入自定义按钮管理界面，编辑器提供标题、启用、短按、长按、启动代码；列表只显示普通 Lua/JS 脚本。
 - 播放桥：`MpvPlayer` 暴露窄范围 `sendScriptMessage`；`MpvPlayerEngine` 和 `PlayerManager` 提供 MPV 专用调用，UI 不直接依赖全局 `MPVLib`。
-- 播放控制：两端复用既有 action container，最多插入 8 个启用按钮；Android 长按触发 `long`，短按触发 `short`；非 MPV 播放隐藏。
+- 播放控制：两端复用既有 action container，追加全部启用按钮；Android 长按触发 `long`，短按触发 `short`；非 MPV 播放隐藏。
 - 生效时机：按钮文件在下次 MPV 实例创建时自动加载；配置变更不强制重建当前会话，避免打断播放。后续如需热重载，使用独立任务扩展。
 - GPU 输出：`hasGpuVideoProcessing()` 忽略 `webhtv-custom-buttons.lua`，避免桥接文件误判为视频处理。
 
 ## 合同、风险与防护
 
 - 普通 `.lua/.js`、现有 `mpv.conf`/`input.conf` 结构、PlayerButtonSetting 内置按钮顺序均保持。
+- 旧版本位于 `scripts/` 顶层的普通脚本会在首次读取配置时迁移到 `.webhtv/`；已有按钮元数据和文件名保持不变。
 - JSON 损坏、字段缺失、重复/非法 ID、超长文本时丢弃无效项或返回可见错误，不删除普通脚本；写文件采用现有有界 UTF-8 校验。
 - Lua 是用户代码，首版不做沙箱；只做 ID/文件名安全校验、函数调用 `pcall` 和错误日志。用户可执行任意 MPV Lua API，这是功能本身的权限边界。
 - 动态按钮不写入 `PlayerButtonSetting` 全局顺序，避免污染内置按钮偏好和 TV 焦点链；按 JSON 顺序追加到现有操作条。
@@ -65,10 +67,10 @@ MPV 官方 Anime4K 资料在本阶段未作为实现依据：网络获取官方 
 
 ## 验收标准
 
-1. `MpvConfigStore` JSON round-trip、非法 JSON、重复/非法 ID、最多 8 项和桥接脚本生成测试通过。
+1. `MpvConfigStore` JSON round-trip、非法 JSON、重复/非法 ID、无数量上限和桥接脚本生成测试通过。
 2. `:app:compileDebugJavaWithJavac` 通过；`git diff --check` 通过。
 3. 移动端和电视端 MPV 播放时启用按钮可见，短按/长按分别发送消息；Exo/IJK 播放时按钮隐藏。
-4. scripts tab 顶部“新建”可打开自定义按钮管理；新建、编辑、删除、禁用、重新进入配置页后数据保持；普通 Lua/JS 脚本仍可导入和运行。
+4. scripts tab 顶部“新建”可打开自定义按钮管理；新建、编辑、删除、禁用、重新进入配置页后数据保持；按钮数量超过 8 个仍可继续新增；普通 Lua/JS 脚本只有在绑定按钮后按所选时机执行。
 5. MPV 日志能看到桥接脚本加载/用户脚本错误，且不影响播放；surface-direct 判定不因桥接脚本改变。
 6. TV 遥控器可聚焦、确认、长按按钮，横向操作条不发生布局跳变。
 
@@ -86,7 +88,7 @@ MPV 官方 Anime4K 资料在本阶段未作为实现依据：网络获取官方 
 
 ## 实施记录
 
-- `MpvConfigStore` 增加最多 8 项按钮的 JSON 读写、ID/文本校验、生成式 `webhtv-custom-buttons.lua`、启动/短按/长按代码和受管 scripts 条目。
+- `MpvConfigStore` 增加无数量上限按钮的 JSON 读写、ID/文本校验、生成式 `webhtv-custom-buttons.lua`、启动/短按/长按代码和受管 scripts 条目。
 - `MpvPlayer.sendScriptMessage()`、`MpvPlayerEngine.sendScriptMessage()`、`PlayerManager.sendMpvCustomButton()` 建立窄范围调用链，UI 不直接依赖 `MPVLib`。
 - `MpvCustomButtonDialog` 提供列表、新建、编辑、启用/禁用、删除；`MpvConfigDialog` 在 scripts 目标复用顶部“新建”按钮打开管理界面，`MpvConfigCreateDialog` 保持普通配置创建流程。
 - 移动端/电视端 `VideoActivity` 将启用按钮追加到既有 action container，支持短按/长按和 MPV-only 可见性；TV 按钮可聚焦。
@@ -104,6 +106,13 @@ MPV 官方 Anime4K 资料在本阶段未作为实现依据：网络获取官方 
 - 状态：implementation complete, local compilation and mobile UI smoke test passed。
 - 已知限制：配置修改在下次 MPV 实例创建时生效；当前播放会话不热重载桥接脚本。Lua 代码按用户权限执行，不提供沙箱。
 
+## 修复记录：脚本生命周期与按钮数量（2026-09-06）
+
+- 根因：mpv 会自动加载 `scripts/` 顶层的每个脚本；旧实现把普通脚本和按钮桥接脚本放在同一层，导致脚本先独立运行一次，再由按钮桥接状态运行一次，切换按钮无法关闭前一份状态。
+- 修复：受管普通脚本统一保存到隐藏目录 `scripts/.webhtv/`；首次读取配置时迁移旧顶层 `.lua/.js` 文件并同步已有按钮元数据。mpv 的脚本扫描会忽略隐藏目录，顶层仅保留 `webhtv-custom-buttons.lua` 桥接文件。
+- 修复：移除存储、导入和管理界面的 8 个按钮上限；界面保留至少 8 个初始槽位，按钮超过 8 个后继续追加空位和播放器按钮。
+- 验证：移动端与电视端 Java 编译通过；移动端 APK 构建通过；ADB 设备在安装前断开，迁移后的手机实机行为待设备重新连接后验证。
+
 ## 修复记录：2026-09-05
 
 - 首版设备崩溃原因：`MpvCustomButtonDialog.button()` 使用 `App.get()` 创建 `MaterialButton`，Material 主题校验失败；已改为使用当前 Dialog 的 themed `Context`，编辑器输入框同样修正。
@@ -114,7 +123,7 @@ MPV 官方 Anime4K 资料在本阶段未作为实现依据：网络获取官方 
 ## UI/UX 重构决策：2026-09-05
 
 - 用户提供的四张界面截图确定了视觉基线：配置弹窗使用白色圆角外壳、标题栏关闭图标、分组说明和带图标的操作卡片；自定义按钮页面使用 L1-L4/R1-R4 固定槽位、空位状态、可展开编辑卡片和导入/导出区域。
-- `../mpvRex/app/src/main/kotlin/xyz/mpv/rex/ui/preferences/CustomButtonScreen.kt`（本地参考实现，访问日 2026-09-05，证据等级 A）证明固定 8 槽、拖动排序、展开编辑和 XML 导入/导出是成熟交互；WebHTV 采用同一信息架构，但保留现有 Java/Dialog 和 `MpvConfigStore` 数据契约。
+- `../mpvRex/app/src/main/kotlin/xyz/mpv/rex/ui/preferences/CustomButtonScreen.kt`（本地参考实现，访问日 2026-09-05，证据等级 A）证明固定槽位、拖动排序、展开编辑和 XML 导入/导出是成熟交互；WebHTV 保留初始 8 槽视觉布局，但不限制持久化按钮数量。
 - 当前缺口：旧实现仅显示普通列表，添加按钮使用独立大按钮，编辑页字段平铺且无脚本创建/导入入口；与 `dialog_mpv_config_create.xml` 的配置卡片风格不一致。
 - 方案比较：不改会继续产生交互割裂；原样迁移 Compose 会引入第二套 UI 技术栈和数据存储；本次采用窄范围 Java 适配，将 scripts 顶部“新建”复用现有创建弹窗，在其中提供自定义按钮、文本脚本、URL 导入、文件导入四种动作，并将自定义按钮管理页改为 8 槽卡片式界面。
 - 接受标准：scripts 列表仍可编辑/导入普通 Lua/JS；顶部“新建”弹窗四种动作均可达；自定义按钮管理页中文、无独立伪造 profile、8 槽状态清晰、编辑/删除/导入/导出不崩溃；移动端和电视端布局不出现文字重叠。
